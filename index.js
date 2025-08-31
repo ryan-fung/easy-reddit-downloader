@@ -42,14 +42,45 @@ let currentUserAfter = ''; // Used to track the after value for the API call, th
 // Default object to track the downloaded posts by type,
 // and the subreddit downloading from.
 let downloadedPosts = {
-	subreddit: '',
-	self: 0,
-	media: 0,
-	link: 0,
-	failed: 0,
-	skipped_due_to_duplicate: 0,
-	skipped_due_to_fileType: 0,
+        subreddit: '',
+        self: 0,
+        media: 0,
+        link: 0,
+        failed: 0,
+        skipped_due_to_duplicate: 0,
+        skipped_due_to_fileType: 0,
 };
+
+// Track post IDs that have already been downloaded to prevent duplicates
+const downloadedIdsPath = './downloaded_ids.json';
+let downloadedIds = new Set();
+if (fs.existsSync(downloadedIdsPath)) {
+        try {
+                downloadedIds = new Set(
+                        JSON.parse(fs.readFileSync(downloadedIdsPath)),
+                );
+        } catch (err) {
+                log('Failed to read downloaded_ids.json: ' + err, true);
+        }
+} else {
+        // create the file if it doesn't exist
+        try {
+                fs.writeFileSync(downloadedIdsPath, JSON.stringify([]));
+        } catch (err) {
+                log('Failed to create downloaded_ids.json: ' + err, true);
+        }
+}
+
+function saveDownloadedIds() {
+        try {
+                fs.writeFileSync(
+                        downloadedIdsPath,
+                        JSON.stringify(Array.from(downloadedIds)),
+                );
+        } catch (err) {
+                log('Failed to write downloaded_ids.json: ' + err, true);
+        }
+}
 
 // Read the user_config.json file for user configuration options
 if (fs.existsSync('./user_config.json')) {
@@ -704,8 +735,12 @@ function sleep() {
 }
 
 async function downloadPost(post) {
-	let postTypeOptions = ['self', 'media', 'link', 'poll', 'gallery'];
-	let postType = -1; // default to no postType until one is found
+        if (!shouldDownloadPost(post.id)) {
+                downloadedPosts.skipped_due_to_duplicate += 1;
+                return checkIfDone(post.name);
+        }
+        let postTypeOptions = ['self', 'media', 'link', 'poll', 'gallery'];
+        let postType = -1; // default to no postType until one is found
 
 	// Determine the type of post. If no type is found, default to link as a last resort.
 	// If it accidentally downloads a self or media post as a link, it will still
@@ -1039,36 +1074,50 @@ async function downloadPost(post) {
 }
 
 function downloadNextSubreddit() {
-	if (currentSubredditIndex > subredditList.length) {
-		checkIfDone('', true);
-	} else {
-		currentSubredditIndex += 1;
-		downloadSubredditPosts(subredditList[currentSubredditIndex]);
-	}
+        if (currentSubredditIndex > subredditList.length) {
+                checkIfDone('', true);
+        } else {
+                currentSubredditIndex += 1;
+                downloadSubredditPosts(subredditList[currentSubredditIndex]);
+        }
+}
+
+function shouldDownloadPost(postId) {
+        if (
+                config.redownload_posts === true ||
+                config.redownload_posts === undefined
+        ) {
+                if (config.redownload_posts === undefined) {
+                        log(
+                                chalk.red(
+                                        "ALERT: Please note that the 'redownload_posts' option is now available in user_config. See the default JSON for example usage.",
+                                ),
+                                true,
+                        );
+                }
+                return true;
+        }
+
+        if (downloadedIds.has(postId)) {
+                return false;
+        }
+
+        downloadedIds.add(postId);
+        saveDownloadedIds();
+        return true;
 }
 
 function shouldWeDownload(subreddit, postTitleWithPrefixAndExtension) {
-	if (
-		config.redownload_posts === true ||
-		config.redownload_posts === undefined
-	) {
-		if (config.redownload_posts === undefined) {
-			log(
-				chalk.red(
-					"ALERT: Please note that the 'redownload_posts' option is now available in user_config. See the default JSON for example usage.",
-				),
-				true,
-			);
-		}
-		return true;
-	} else {
-		// Check if the post in the subreddit folder already exists.
-		// If it does, we don't need to download it again.
-		let postExists = fs.existsSync(
-			`${downloadDirectory}/${postTitleWithPrefixAndExtension}`,
-		);
-		return !postExists;
-	}
+        if (
+                config.redownload_posts === true ||
+                config.redownload_posts === undefined
+        ) {
+                return true;
+        }
+        let postExists = fs.existsSync(
+                `${downloadDirectory}/${postTitleWithPrefixAndExtension}`,
+        );
+        return !postExists;
 }
 
 function onErr(err) {
