@@ -42,14 +42,39 @@ let currentUserAfter = ''; // Used to track the after value for the API call, th
 // Default object to track the downloaded posts by type,
 // and the subreddit downloading from.
 let downloadedPosts = {
-	subreddit: '',
-	self: 0,
-	media: 0,
-	link: 0,
-	failed: 0,
-	skipped_due_to_duplicate: 0,
-	skipped_due_to_fileType: 0,
+        subreddit: '',
+        self: 0,
+        media: 0,
+        link: 0,
+        failed: 0,
+        skipped_due_to_duplicate: 0,
+        skipped_due_to_fileType: 0,
 };
+
+// Track previously downloaded Reddit post IDs to avoid redownloading the same
+// content when file names change (e.g., score updates).
+const downloadHistoryPath = './download_history.json';
+let downloadedIds = new Set();
+if (fs.existsSync(downloadHistoryPath)) {
+        try {
+                const raw = fs.readFileSync(downloadHistoryPath, 'utf8');
+                const ids = JSON.parse(raw);
+                if (Array.isArray(ids)) {
+                        downloadedIds = new Set(ids);
+                }
+        } catch (e) {
+                log('ERROR: Could not read download history file.', true);
+        }
+}
+
+function markPostDownloaded(id) {
+        downloadedIds.add(id);
+        try {
+                fs.writeFileSync(downloadHistoryPath, JSON.stringify([...downloadedIds]));
+        } catch (e) {
+                log('ERROR: Could not write download history file.', true);
+        }
+}
 
 // Read the user_config.json file for user configuration options
 if (fs.existsSync('./user_config.json')) {
@@ -664,7 +689,7 @@ function getPostType(post, postTypeOptions) {
 	return postType;
 }
 
-async function downloadMediaFile(downloadURL, filePath, postName) {
+async function downloadMediaFile(downloadURL, filePath, postName, postId) {
 	try {
 		const response = await axios({
 			method: 'GET',
@@ -674,17 +699,18 @@ async function downloadMediaFile(downloadURL, filePath, postName) {
 
 		response.data.pipe(fs.createWriteStream(filePath));
 
-		return new Promise((resolve, reject) => {
-			response.data.on('end', () => {
-				downloadedPosts.media += 1;
-				checkIfDone(postName);
-				resolve();
-			});
+                return new Promise((resolve, reject) => {
+                        response.data.on('end', () => {
+                                markPostDownloaded(postId);
+                                downloadedPosts.media += 1;
+                                checkIfDone(postName);
+                                resolve();
+                        });
 
-			response.data.on('error', (error) => {
-				reject(error);
-			});
-		});
+                        response.data.on('error', (error) => {
+                                reject(error);
+                        });
+                });
 	} catch (error) {
 		downloadedPosts.failed += 1;
 		checkIfDone(postName);
@@ -743,8 +769,8 @@ async function downloadPost(post) {
 			if (!fs.existsSync(postDirectory)) {
 				fs.mkdirSync(postDirectory);
 			}
-			const filePath = `${postTitleScrubbed}/${id}.${fileType}`;
-			const toDownload = await shouldWeDownload(post.subreddit, filePath);
+                        const filePath = `${postTitleScrubbed}/${id}.${fileType}`;
+                        const toDownload = await shouldWeDownload(post.id, filePath);
 
 			if (!toDownload) {
 				if (--newDownloads === 0) {
@@ -754,11 +780,12 @@ async function downloadPost(post) {
 					}
 				}
 			} else {
-				downloadMediaFile(
-					downloadUrl,
-					`${downloadDirectory}/${filePath}`,
-					post.name,
-				);
+                                downloadMediaFile(
+                                        downloadUrl,
+                                        `${downloadDirectory}/${filePath}`,
+                                        post.name,
+                                        post.id,
+                                );
 			}
 		}
 	} else if (postType != 3 && post.url !== undefined) {
@@ -771,10 +798,10 @@ async function downloadPost(post) {
 
 		if (postType === 0) {
 			// DOWNLOAD A SELF POST
-			let toDownload = await shouldWeDownload(
-				post.subreddit,
-				`${postTitleScrubbed}.txt`,
-			);
+                        let toDownload = await shouldWeDownload(
+                                post.id,
+                                `${postTitleScrubbed}.txt`,
+                        );
 			if (!toDownload) {
 				downloadedPosts.skipped_due_to_duplicate += 1;
 				return checkIfDone(post.name);
@@ -824,19 +851,20 @@ async function downloadPost(post) {
 					fs.writeFile(
 						`${downloadDirectory}/${postTitleScrubbed}.txt`,
 						comments_string,
-						function (err) {
-							if (err) {
-								log(err, true);
-							}
-							downloadedPosts.self += 1;
-							if (checkIfDone(post.name)) {
-								return;
-							}
-						},
-					);
-				}
-			}
-		} else if (postType === 1) {
+                                                function (err) {
+                                                        if (err) {
+                                                                log(err, true);
+                                                        }
+                                                        downloadedPosts.self += 1;
+                                                        markPostDownloaded(post.id);
+                                                        if (checkIfDone(post.name)) {
+                                                                return;
+                                                        }
+                                                },
+                                        );
+                                }
+                        }
+                } else if (postType === 1) {
 			// DOWNLOAD A MEDIA POST
 			if (post.preview != undefined) {
 				// Reddit stores fallback URL previews for some GIFs.
@@ -889,21 +917,22 @@ async function downloadPost(post) {
 				downloadedPosts.skipped_due_to_fileType += 1;
 				return checkIfDone(post.name);
 			} else {
-				let toDownload = await shouldWeDownload(
-					post.subreddit,
-					`${postTitleScrubbed}.${fileType}`,
-				);
+                                let toDownload = await shouldWeDownload(
+                                        post.id,
+                                        `${postTitleScrubbed}.${fileType}`,
+                                );
 				if (!toDownload) {
 					downloadedPosts.skipped_due_to_duplicate += 1;
 					if (checkIfDone(post.name)) {
 						return;
 					}
 				} else {
-					downloadMediaFile(
-						downloadURL,
-						`${downloadDirectory}/${postTitleScrubbed}.${fileType}`,
-						post.name,
-					);
+                                        downloadMediaFile(
+                                                downloadURL,
+                                                `${downloadDirectory}/${postTitleScrubbed}.${fileType}`,
+                                                post.name,
+                                                post.id,
+                                        );
 				}
 			}
 		} else if (postType === 2) {
@@ -912,10 +941,10 @@ async function downloadPost(post) {
 				downloadedPosts.skipped_due_to_fileType += 1;
 				return checkIfDone(post.name);
 			} else {
-				let toDownload = await shouldWeDownload(
-					post.subreddit,
-					`${postTitleScrubbed}.html`,
-				);
+                                let toDownload = await shouldWeDownload(
+                                        post.id,
+                                        `${postTitleScrubbed}.html`,
+                                );
 				if (!toDownload) {
 					downloadedPosts.skipped_due_to_duplicate += 1;
 					if (checkIfDone(post.name)) {
@@ -975,16 +1004,17 @@ async function downloadPost(post) {
 								.input(videoPath)
 								.input(audioPath)
 								.output(`${downloadDirectory}/${fileName}`)
-								.on('end', () => {
-									console.log('Download complete');
-									// Remove temporary audio and video files
-									fs.unlinkSync(audioPath);
-									fs.unlinkSync(videoPath);
-									downloadedPosts.link += 1;
-									if (checkIfDone(post.name)) {
-										return;
-									}
-								})
+                                                                .on('end', () => {
+                                                                        console.log('Download complete');
+                                                                        // Remove temporary audio and video files
+                                                                        fs.unlinkSync(audioPath);
+                                                                        fs.unlinkSync(videoPath);
+                                                                        downloadedPosts.link += 1;
+                                                                        markPostDownloaded(post.id);
+                                                                        if (checkIfDone(post.name)) {
+                                                                                return;
+                                                                        }
+                                                                })
 								.run();
 						} catch (error) {
 							log(
@@ -993,32 +1023,34 @@ async function downloadPost(post) {
 							);
 							let htmlFile = `<html><body><script type='text/javascript'>window.location.href = "${post.url}";</script></body></html>`;
 
-							fs.writeFile(
-								`${downloadDirectory}/${postTitleScrubbed}.html`,
-								htmlFile,
-								function (err) {
-									if (err) throw err;
-									downloadedPosts.link += 1;
-									if (checkIfDone(post.name)) {
-										return;
-									}
-								},
-							);
+                                                        fs.writeFile(
+                                                                `${downloadDirectory}/${postTitleScrubbed}.html`,
+                                                                htmlFile,
+                                                                function (err) {
+                                                                        if (err) throw err;
+                                                                        downloadedPosts.link += 1;
+                                                                        markPostDownloaded(post.id);
+                                                                        if (checkIfDone(post.name)) {
+                                                                                return;
+                                                                        }
+                                                                },
+                                                        );
 						}
 					} else {
 						let htmlFile = `<html><body><script type='text/javascript'>window.location.href = "${post.url}";</script></body></html>`;
 
-						fs.writeFile(
-							`${downloadDirectory}/${postTitleScrubbed}.html`,
-							htmlFile,
-							function (err) {
-								if (err) throw err;
-								downloadedPosts.link += 1;
-								if (checkIfDone(post.name)) {
-									return;
-								}
-							},
-						);
+                                                fs.writeFile(
+                                                        `${downloadDirectory}/${postTitleScrubbed}.html`,
+                                                        htmlFile,
+                                                        function (err) {
+                                                                if (err) throw err;
+                                                                downloadedPosts.link += 1;
+                                                                markPostDownloaded(post.id);
+                                                                if (checkIfDone(post.name)) {
+                                                                        return;
+                                                                }
+                                                        },
+                                                );
 					}
 				}
 			}
@@ -1047,7 +1079,7 @@ function downloadNextSubreddit() {
 	}
 }
 
-function shouldWeDownload(subreddit, postTitleWithPrefixAndExtension) {
+function shouldWeDownload(postId, postTitleWithPrefixAndExtension) {
 	if (
 		config.redownload_posts === true ||
 		config.redownload_posts === undefined
@@ -1061,14 +1093,17 @@ function shouldWeDownload(subreddit, postTitleWithPrefixAndExtension) {
 			);
 		}
 		return true;
-	} else {
-		// Check if the post in the subreddit folder already exists.
-		// If it does, we don't need to download it again.
-		let postExists = fs.existsSync(
-			`${downloadDirectory}/${postTitleWithPrefixAndExtension}`,
-		);
-		return !postExists;
-	}
+        } else {
+                // Skip downloading if we've already saved this post before or if
+                // a file with the same name exists on disk.
+                if (downloadedIds.has(postId)) {
+                        return false;
+                }
+                let postExists = fs.existsSync(
+                        `${downloadDirectory}/${postTitleWithPrefixAndExtension}`,
+                );
+                return !postExists;
+        }
 }
 
 function onErr(err) {

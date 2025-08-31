@@ -135,5 +135,6 @@ testing_folder
 # config
 user_config.json
 reddit_post_downloader.code-workspace
+download_history.json
 
 .DS_Store
